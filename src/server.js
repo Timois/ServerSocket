@@ -1,67 +1,50 @@
 import express from 'express';
 import http from 'http';
-import { Server } from 'socket.io';
+import { Server } from "socket.io";
 import axios from 'axios';
-
+// const urlBackend = import.meta.env.VITE_API_ENDPOINT;
 const app = express();
 const server = http.createServer(app);
 const io = new Server(server, {
   cors: {
-    origin: '*', // Allow all origins (for development purposes)
-    methods: ['GET', 'POST'],
+    origin: "*", // cambia a tu frontend en producción
+    methods: ["GET", "POST"],
   },
 });
 
-// 🔐 Middleware de autenticación
+// Middleware de autenticación v2
 io.use(async (socket, next) => {
-  const token = socket.handshake.auth?.token; // Cliente debe enviar token aquí
-
-  if (!token) {
-    return next(new Error('Token requerido'));
-  }
+  const token = socket.handshake.query.token; // en v2, viene por query
+  if (!token) return next(new Error("Token requerido"));
 
   try {
-    // Llamada a tu backend Laravel
-    const response = await axios.get('http://127.0.0.1:8000/api/users/verifyToken', {
+    // Intentamos verificar en backend Laravel
+    let response = await axios.get('http://127.0.0.1:8000/api/users/verifyTeacherToken', {
       headers: { Authorization: `Bearer ${token}` },
     });
 
     if (response.data.valid) {
-      socket.user = response.data.user; // Guardamos datos del usuario en el socket
+      socket.user = response.data.user;
+      socket.role = 'teacher';
       return next();
-    } else {
-      return next(new Error('Token inválido'));
     }
+
+    response = await axios.get('http://127.0.0.1:8000/api/students/verifyStudentToken', {
+      headers: { Authorization: `Bearer ${token}` },
+    });
+
+    if (response.data.valid) {
+      socket.user = response.data.user;
+      socket.role = 'student';
+      return next();
+    }
+
+    return next(new Error("Token inválido"));
   } catch (err) {
-    return next(new Error('Error verificando token con backend'));
+    return next(new Error("Error verificando token con backend"));
   }
 });
 
-// ----------------------------------------------------------
-// Tu lógica de examenes (no la toqué, sigue igual)
-// ----------------------------------------------------------
-
-const examStatuses = {
-  NOT_STARTED: 'NOT_STARTED',
-  STARTED: 'STARTED',
-  PAUSED: 'PAUSED',
-  STOPPED: 'STOPPED',
-  CONTINUED: 'CONTINUED',
-  COMPLETED: 'COMPLETED',
-};
-
-// Función para formatear tiempo en h:m:s
-function formatTimeHMS(totalSeconds) {
-  if (totalSeconds <= 0) return '00:00:00';
-
-  const hours = Math.floor(totalSeconds / 3600);
-  const minutes = Math.floor((totalSeconds % 3600) / 60);
-  const seconds = totalSeconds % 60;
-
-  return `${hours.toString().padStart(2, '0')}:${minutes
-    .toString()
-    .padStart(2, '0')}:${seconds.toString().padStart(2, '0')}`;
-}
 
 io.on('connection', (socket) => {
   console.log('✅ Usuario conectado:', socket.user);
