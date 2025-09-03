@@ -1,169 +1,161 @@
-import express from 'express';
-import http from 'http';
+import express from "express";
+import http from "http";
 import { Server } from "socket.io";
-import axios from 'axios';
-// const urlBackend = import.meta.env.VITE_API_ENDPOINT;
+import cors from "cors";
+import { backendService } from "./service/backendService.js";
+
 const app = express();
 const server = http.createServer(app);
+
+app.use(cors({
+  origin: ["http://localhost:5173", "http://127.0.0.1:5173"],
+  methods: ["GET", "POST"],
+  credentials: true
+}));
+app.use(express.json());
+
+// 🔹 Socket.IO con CORS
 const io = new Server(server, {
   cors: {
-    origin: "*", // cambia a tu frontend en producción
+    origin: ["http://localhost:5173", "http://127.0.0.1:5173"],
     methods: ["GET", "POST"],
-  },
+    credentials: true
+  }
 });
 
-// Middleware de autenticación v2
-io.use(async (socket, next) => {
-  const token = socket.handshake.query.token; // en v2, viene por query
-  if (!token) return next(new Error("Token requerido"));
+// Cache de tokens
+const tokenCache = new Map();
+
+// Estado de salas
+let times = new Map();
+const examStatuses = {
+  STARTED: 'started',
+  COMPLETED: 'completed'
+};
+
+// Función de formato HH:MM:SS
+function formatTimeHMS(seconds) {
+  const h = Math.floor(seconds / 3600).toString().padStart(2, "0");
+  const m = Math.floor((seconds % 3600) / 60).toString().padStart(2, "0");
+  const s = (seconds % 60).toString().padStart(2, "0");
+  return `${h}:${m}:${s}`;
+}
+// 🔹 Endpoint: iniciar evaluación
+app.post("/emit/start-evaluation", async (req, res) => {
+  const { roomId, duration, token } = req.body;
+  
+  console.log("➡️ duration (segundos):", duration);
+  if (!token) return res.status(401).json({ message: "Token requerido" });
+  if (!duration || duration <= 0) return res.status(400).json({ message: "Duración inválida" });
 
   try {
-    // Intentamos verificar en backend Laravel
-    let response = await axios.get('http://127.0.0.1:8000/api/users/verifyTeacherToken', {
-      headers: { Authorization: `Bearer ${token}` },
-    });
-
-    if (response.data.valid) {
-      socket.user = response.data.user;
-      socket.role = 'teacher';
-      return next();
+    // Validar token con cache o Laravel
+    let verification = tokenCache.get(token);
+    if (!verification || verification.expires <= Date.now()) {
+      let response = await backendService.verifyTeacherToken(token);
+      if (!response.valid) {
+        response = await backendService.verifyStudentToken(token);
+      }
+      verification = response;
+      tokenCache.set(token, { ...verification, expires: Date.now() + 60000 });
     }
 
-    response = await axios.get('http://127.0.0.1:8000/api/students/verifyStudentToken', {
-      headers: { Authorization: `Bearer ${token}` },
-    });
-
-    if (response.data.valid) {
-      socket.user = response.data.user;
-      socket.role = 'student';
-      return next();
+    if (!verification.valid) {
+      return res.status(401).json({ message: "Token inválido" });
     }
 
-    return next(new Error("Token inválido"));
+    // Guardar duración en memoria
+    times.set(roomId, { time: duration, interval: null });
+
+    // Emitir inicio a la sala
+    io.to(roomId).emit("start", { roomId, duration });
+    startGroupExam(io, roomId);
+
+    return res.json({
+      message: "Evento emitido correctamente",
+      roomId,
+      duration,
+      clients: io.sockets.adapter.rooms.get(roomId)?.size || 0
+    });
+
   } catch (err) {
-    return next(new Error("Error verificando token con backend"));
+    console.error("❌ Error verificando token:", err.message);
+    return res.status(500).json({ message: "Error interno" });
   }
 });
 
+// 🔹 Socket conexiones
+io.on("connection", (socket) => {
+  console.log("✅ Cliente conectado:", socket.id);
 
-io.on('connection', (socket) => {
-  console.log('✅ Usuario conectado:', socket.user);
-
-  socket.on('join', (payload) =>
-    execute(socket, { action: 'join', roomId: payload.roomId })
-  );
-  socket.on('duration', (payload) =>
-    execute(socket, { action: 'duration', roomId: payload.roomId, time: payload.time })
-  );
-  socket.on('start', (payload) =>
-    execute(socket, { action: 'start', roomId: payload.roomId })
-  );
-  socket.on('pause', (payload) =>
-    execute(socket, { action: 'pause', roomId: payload.roomId })
-  );
-  socket.on('continue', (payload) =>
-    execute(socket, { action: 'continue', roomId: payload.roomId })
-  );
-  socket.on('stop', (payload) =>
-    execute(socket, { action: 'stop', roomId: payload.roomId })
-  );
-});
-
-const PORT = process.env.PORT || 3000;
-server.listen(PORT, () => {
-  console.log(`Server listening on port ${PORT}`);
-});
-
-let times = new Map();
-
-function execute(socket, payload) {
-  switch (payload.action) {
-    case 'join':
-      joinConnection(socket, payload.roomId);
-      break;
-    case 'duration':
-      setDuration(socket, payload.roomId, payload.time);
-      break;
-    case 'start':
-      startGroupExam(socket, payload.roomId);
-      break;
-    case 'pause':
-      pauseGroupExam(socket, payload.roomId);
-      break;
-    case 'continue':
-      continueGroupExam(socket, payload.roomId);
-      break;
-    case 'stop':
-      stopGroupExam(socket, payload.roomId);
-      break;
-    default:
-      socket.emit('msg', { msg: 'Evento Erróneo' });
-      break;
-  }
-}
-
-function joinConnection(socket, roomId) {
-  socket.join(roomId);
-  socket.to(roomId).emit('msg', { msg: `Usuario unido a la sala: ${roomId}` });
-}
-
-function setDuration(socket, roomId, time) {
-  times.set(roomId, { time, interval: null });
-  console.log(`Tiempo configurado para la sala ${roomId}: ${time} segundos`);
-  socket.to(roomId).emit('msg', {
-    msg: `Tiempo de examen configurado en ${time} minutos para la sala ${roomId}`,
+  socket.on("join", ({ roomId, role }) => {
+    socket.join(roomId);
+    const roomSize = io.sockets.adapter.rooms.get(roomId)?.size || 0;
+    console.log(`📌 Socket ${socket.id} (${role}) se unió a sala ${roomId}. Total: ${roomSize}`);
+    socket.emit("joined", { roomId, clientsInRoom: roomSize });
   });
-}
 
-function startGroupExam(socket, roomId) {
+  socket.on("disconnect", () => {
+    console.log("❌ Cliente desconectado:", socket.id);
+  });
+});
+
+function startGroupExam(io, roomId) {
   const roomTimeData = times.get(roomId);
-  if (!roomTimeData) {
-    socket.emit('msg', { msg: `No se encontro la duracion de la sala ${roomId}` });
-    return;
-  }
+  if (!roomTimeData) return;
 
-  let { time } = roomTimeData;
+  let time = roomTimeData.time;
 
-  socket.to(roomId).emit('msg', {
+  console.log(`🚀 Iniciando contador en sala ${roomId} con ${formatTimeHMS(time)}`);
+
+  // Emitir primer estado
+  io.to(roomId).emit("msg", {
     isStarted: examStatuses.STARTED,
     timeLeft: time,
     timeFormatted: formatTimeHMS(time),
-    serverTime: new Date().toLocaleTimeString('es-ES', { timeZone: 'America/La_Paz' }),
+    serverTime: new Date().toLocaleTimeString("es-ES", { timeZone: "America/La_Paz" })
   });
 
+  // Iniciar intervalo
   roomTimeData.interval = setInterval(() => {
-    --time;
+    --time
 
-    if (time <= 0) {
+    // 🔹 Imprimir tiempo restante en formato HH:MM:SS
+    console.log(`⏱ Sala ${roomId} - tiempo restante: ${formatTimeHMS(time)}`);
+
+    if (time <= 0) {  
       clearInterval(roomTimeData.interval);
       roomTimeData.interval = null;
-      times.set(roomId, roomTimeData);
+      times.set(roomId, { ...roomTimeData, time: 0 });
 
-      socket.to(roomId).emit('msg', {
+      io.to(roomId).emit("msg", {
         isStarted: examStatuses.COMPLETED,
         timeLeft: 0,
-        timeFormatted: '00:00:00',
-        serverTime: new Date().toLocaleTimeString('es-ES', { timeZone: 'America/La_Paz' }),
+        timeFormatted: "00:00:00",
         examCompleted: true,
+        serverTime: new Date().toLocaleTimeString("es-ES", { timeZone: "America/La_Paz" })
       });
 
-      console.log(`Examen completado - tiempo agotado para la sala ${roomId}`);
+      console.log(`✅ Examen completado - sala ${roomId}`);
       return;
     }
 
+    // Actualizar y enviar tiempo
     roomTimeData.time = time;
     times.set(roomId, roomTimeData);
 
-    socket.to(roomId).emit('msg', {
+    io.to(roomId).emit("msg", {
       isStarted: examStatuses.STARTED,
       timeLeft: time,
       timeFormatted: formatTimeHMS(time),
-      serverTime: new Date().toLocaleTimeString('es-ES', { timeZone: 'America/La_Paz' }),
+      serverTime: new Date().toLocaleTimeString("es-ES", { timeZone: "America/La_Paz" })
     });
-
-    console.log(`Tiempo: ${formatTimeHMS(time)} para la sala ${roomId}`);
   }, 1000);
 }
+
+const PORT = process.env.PORT || 3000;
+server.listen(PORT, () => console.log(`🚀 Server listening on port ${PORT}`));
+
 
 function pauseGroupExam(socket, roomId) {
   const roomTimeData = times.get(roomId);
