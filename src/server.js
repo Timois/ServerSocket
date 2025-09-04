@@ -29,8 +29,11 @@ const tokenCache = new Map();
 // Estado de salas
 let times = new Map();
 const examStatuses = {
-  STARTED: 'started',
-  COMPLETED: 'completed'
+  STARTED: "started",
+  COMPLETED: "completed",
+  PAUSED: "paused",
+  CONTINUED: "continued",
+  STOPPED: "stopped"
 };
 
 // Función de formato HH:MM:SS
@@ -40,13 +43,54 @@ function formatTimeHMS(seconds) {
   const s = (seconds % 60).toString().padStart(2, "0");
   return `${h}:${m}:${s}`;
 }
+
+// ✅ Helper para emitir estado
+function emitStatus(io, roomId, status) {
+  const roomTimeData = times.get(roomId);
+  if (!roomTimeData) return;
+  io.to(roomId).emit("msg", {
+    isStarted: status,
+    timeLeft: roomTimeData.time,
+    timeFormatted: formatTimeHMS(roomTimeData.time),
+    serverTime: new Date().toLocaleTimeString("es-ES", {
+      timeZone: "America/La_Paz"
+    })
+  });
+}
+
+// ✅ Función para pausar
+function pauseGroupExam(io, roomId) {
+  const roomTimeData = times.get(roomId);
+  if (!roomTimeData) return;
+
+  if (roomTimeData.interval) {
+    clearInterval(roomTimeData.interval);
+    roomTimeData.interval = null;
+    times.set(roomId, roomTimeData);
+    emitStatus(io, roomId, examStatuses.PAUSED);
+    console.log(`⏸ Examen pausado - sala ${roomId}`);
+  }
+}
+
+// ✅ Función para continuar
+function continueGroupExam(io, roomId) {
+  const roomTimeData = times.get(roomId);
+  if (!roomTimeData) return;
+  if (roomTimeData.interval || roomTimeData.time <= 0) return; // ya corriendo o sin tiempo
+
+  emitStatus(io, roomId, examStatuses.CONTINUED);
+  console.log(`▶️ Examen reanudado - sala ${roomId}`);
+  startGroupExam(io, roomId);
+}
+
 // 🔹 Endpoint: iniciar evaluación
 app.post("/emit/start-evaluation", async (req, res) => {
   const { roomId, duration, token } = req.body;
-  
+
   console.log("➡️ duration (segundos):", duration);
   if (!token) return res.status(401).json({ message: "Token requerido" });
-  if (!duration || duration <= 0) return res.status(400).json({ message: "Duración inválida" });
+  if (!duration || duration <= 0)
+    return res.status(400).json({ message: "Duración inválida" });
 
   try {
     // Validar token con cache o Laravel
@@ -77,9 +121,45 @@ app.post("/emit/start-evaluation", async (req, res) => {
       duration,
       clients: io.sockets.adapter.rooms.get(roomId)?.size || 0
     });
-
   } catch (err) {
     console.error("❌ Error verificando token:", err.message);
+    return res.status(500).json({ message: "Error interno" });
+  }
+});
+
+// 🔹 Endpoint: pausar evaluación
+app.post("/emit/pause-evaluation", async (req, res) => {
+  const { roomId, token } = req.body;
+  if (!token) return res.status(401).json({ message: "Token requerido" });
+
+  try {
+    const roomTimeData = times.get(roomId);
+    if (!roomTimeData) return res.status(404).json({ message: "Sala no encontrada" });
+
+    pauseGroupExam(io, roomId);
+    return res.json({ message: "Examen pausado", roomId, timeLeft: roomTimeData.time });
+  } catch (err) {
+    console.error("❌ Error al pausar:", err.message);
+    return res.status(500).json({ message: "Error interno" });
+  }
+});
+
+// 🔹 Endpoint: continuar evaluación
+app.post("/emit/continue-evaluation", async (req, res) => {
+  const { roomId, token } = req.body;
+  if (!token) return res.status(401).json({ message: "Token requerido" });
+
+  try {
+    const roomTimeData = times.get(roomId);
+    if (!roomTimeData) return res.status(404).json({ message: "Sala no encontrada" });
+
+    if (!roomTimeData.interval && roomTimeData.time > 0) {
+      continueGroupExam(io, roomId);
+    }
+
+    return res.json({ message: "Examen reanudado", roomId, timeLeft: roomTimeData.time });
+  } catch (err) {
+    console.error("❌ Error al continuar:", err.message);
     return res.status(500).json({ message: "Error interno" });
   }
 });
@@ -95,35 +175,41 @@ io.on("connection", (socket) => {
     socket.emit("joined", { roomId, clientsInRoom: roomSize });
   });
 
+  // Control directo por socket (ej: docente manda evento)
+  socket.on("control:pause", ({ roomId }) => {
+    pauseGroupExam(io, roomId);
+  });
+
+  socket.on("control:continue", ({ roomId }) => {
+    continueGroupExam(io, roomId);
+  });
+
   socket.on("disconnect", () => {
     console.log("❌ Cliente desconectado:", socket.id);
   });
 });
 
+// 🔹 Lógica principal de examen
 function startGroupExam(io, roomId) {
   const roomTimeData = times.get(roomId);
   if (!roomTimeData) return;
 
-  let time = roomTimeData.time;
+  if (roomTimeData.interval) {
+    console.warn(`⚠️ Ya existe un intervalo en sala ${roomId}`);
+    return;
+  }
 
+  let time = roomTimeData.time;
   console.log(`🚀 Iniciando contador en sala ${roomId} con ${formatTimeHMS(time)}`);
 
-  // Emitir primer estado
-  io.to(roomId).emit("msg", {
-    isStarted: examStatuses.STARTED,
-    timeLeft: time,
-    timeFormatted: formatTimeHMS(time),
-    serverTime: new Date().toLocaleTimeString("es-ES", { timeZone: "America/La_Paz" })
-  });
+  emitStatus(io, roomId, examStatuses.STARTED);
 
-  // Iniciar intervalo
   roomTimeData.interval = setInterval(() => {
-    --time
+    --time;
 
-    // 🔹 Imprimir tiempo restante en formato HH:MM:SS
     console.log(`⏱ Sala ${roomId} - tiempo restante: ${formatTimeHMS(time)}`);
 
-    if (time <= 0) {  
+    if (time <= 0) {
       clearInterval(roomTimeData.interval);
       roomTimeData.interval = null;
       times.set(roomId, { ...roomTimeData, time: 0 });
@@ -133,132 +219,20 @@ function startGroupExam(io, roomId) {
         timeLeft: 0,
         timeFormatted: "00:00:00",
         examCompleted: true,
-        serverTime: new Date().toLocaleTimeString("es-ES", { timeZone: "America/La_Paz" })
+        serverTime: new Date().toLocaleTimeString("es-ES", {
+          timeZone: "America/La_Paz"
+        })
       });
 
       console.log(`✅ Examen completado - sala ${roomId}`);
       return;
     }
 
-    // Actualizar y enviar tiempo
     roomTimeData.time = time;
     times.set(roomId, roomTimeData);
-
-    io.to(roomId).emit("msg", {
-      isStarted: examStatuses.STARTED,
-      timeLeft: time,
-      timeFormatted: formatTimeHMS(time),
-      serverTime: new Date().toLocaleTimeString("es-ES", { timeZone: "America/La_Paz" })
-    });
+    emitStatus(io, roomId, examStatuses.STARTED);
   }, 1000);
 }
 
 const PORT = process.env.PORT || 3000;
 server.listen(PORT, () => console.log(`🚀 Server listening on port ${PORT}`));
-
-
-function pauseGroupExam(socket, roomId) {
-  const roomTimeData = times.get(roomId);
-  if (!roomTimeData) {
-    socket.emit('msg', { msg: `No se encontró la sala con id ${roomId}` });
-    return;
-  }
-
-  if (roomTimeData.interval) {
-    clearInterval(roomTimeData.interval);
-    roomTimeData.interval = null;
-    times.set(roomId, roomTimeData);
-
-    socket.to(roomId).emit('msg', {
-      isStarted: examStatuses.PAUSED,
-      timeLeft: roomTimeData.time,
-      timeFormatted: formatTimeHMS(roomTimeData.time),
-      serverTime: new Date().toLocaleTimeString('es-ES', { timeZone: 'America/La_Paz' }),
-    });
-
-    console.log(`Examen pausado para la sala ${roomId}, tiempo restante: ${formatTimeHMS(roomTimeData.time)}`);
-  } else {
-    socket.emit('msg', { msg: `No hay un examen activo para pausar en la sala ${roomId}` });
-  }
-}
-
-function continueGroupExam(socket, roomId) {
-  const roomTimeData = times.get(roomId);
-  if (!roomTimeData) {
-    socket.emit('msg', { msg: `No se encontró la sala con id ${roomId}` });
-    return;
-  }
-
-  if (roomTimeData.interval) {
-    socket.emit('msg', { msg: `El examen ya está en curso en la sala ${roomId}` });
-    return;
-  }
-
-  let { time } = roomTimeData;
-  roomTimeData.interval = setInterval(() => {
-    --time;
-
-    if (time <= 0) {
-      clearInterval(roomTimeData.interval);
-      roomTimeData.interval = null;
-      times.set(roomId, roomTimeData);
-
-      socket.to(roomId).emit('msg', {
-        isStarted: examStatuses.COMPLETED,
-        timeLeft: 0,
-        timeFormatted: '00:00:00',
-        serverTime: new Date().toLocaleTimeString('es-ES', { timeZone: 'America/La_Paz' }),
-        examCompleted: true,
-      });
-
-      console.log(`Examen completado - tiempo agotado para la sala ${roomId}`);
-      return;
-    }
-
-    roomTimeData.time = time;
-    times.set(roomId, roomTimeData);
-
-    socket.to(roomId).emit('msg', {
-      isStarted: examStatuses.CONTINUED,
-      timeLeft: time,
-      timeFormatted: formatTimeHMS(time),
-      serverTime: new Date().toLocaleTimeString('es-ES', { timeZone: 'America/La_Paz' }),
-    });
-
-    console.log(`Tiempo: ${formatTimeHMS(time)} para la sala ${roomId}`);
-  }, 1000);
-
-  socket.to(roomId).emit('msg', {
-    isStarted: examStatuses.CONTINUED,
-    timeLeft: time,
-    timeFormatted: formatTimeHMS(time),
-    serverTime: new Date().toLocaleTimeString('es-ES', { timeZone: 'America/La_Paz' }),
-  });
-
-  console.log(`Examen reanudado para la sala ${roomId}`);
-}
-
-function stopGroupExam(socket, roomId) {
-  const roomTimeData = times.get(roomId);
-  if (!roomTimeData) {
-    socket.emit('msg', { msg: `No se encontró la sala con id ${roomId}` });
-    return;
-  }
-
-  if (roomTimeData.interval) {
-    clearInterval(roomTimeData.interval);
-    roomTimeData.interval = null;
-  }
-
-  times.delete(roomId);
-
-  socket.to(roomId).emit('msg', {
-    isStarted: examStatuses.STOPPED,
-    timeLeft: 0,
-    timeFormatted: '00:00:00',
-    serverTime: new Date().toLocaleTimeString('es-ES', { timeZone: 'America/La_Paz' }),
-    examStopped: true,
-  });
-
-  console.log(`Examen detenido para la sala ${roomId}`);
-}
