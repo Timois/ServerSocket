@@ -29,11 +29,10 @@ const tokenCache = new Map();
 // Estado de salas
 let times = new Map();
 const examStatuses = {
-  STARTED: "started",
-  COMPLETED: "completed",
-  PAUSED: "paused",
-  CONTINUED: "continued",
-  STOPPED: "stopped"
+  WAITING: "pendiente",
+  IN_PROGRESS: "en_progreso",
+  PAUSED: "pausado",
+  COMPLETED: "completado"
 };
 
 // Función de formato HH:MM:SS
@@ -49,7 +48,7 @@ function emitStatus(io, roomId, status) {
   const roomTimeData = times.get(roomId);
   if (!roomTimeData) return;
   io.to(roomId).emit("msg", {
-    isStarted: status,
+    examStatus: status, // 🔹 Cambié de isStarted → examStatus
     timeLeft: roomTimeData.time,
     timeFormatted: formatTimeHMS(roomTimeData.time),
     serverTime: new Date().toLocaleTimeString("es-ES", {
@@ -58,7 +57,7 @@ function emitStatus(io, roomId, status) {
   });
 }
 
-// ✅ Función para pausar
+// ✅ Función de pausar
 function pauseGroupExam(io, roomId) {
   const roomTimeData = times.get(roomId);
   if (!roomTimeData) return;
@@ -72,15 +71,14 @@ function pauseGroupExam(io, roomId) {
   }
 }
 
-// ✅ Función para continuar
+// ✅ Función de continuar
 function continueGroupExam(io, roomId) {
   const roomTimeData = times.get(roomId);
   if (!roomTimeData) return;
-  if (roomTimeData.interval || roomTimeData.time <= 0) return; // ya corriendo o sin tiempo
+  if (roomTimeData.interval || roomTimeData.time <= 0) return;
 
-  emitStatus(io, roomId, examStatuses.CONTINUED);
   console.log(`▶️ Examen reanudado - sala ${roomId}`);
-  startGroupExam(io, roomId);
+  startGroupExam(io, roomId); // al iniciar otra vez, ya emite IN_PROGRESS
 }
 
 // 🔹 Endpoint: iniciar evaluación
@@ -189,7 +187,7 @@ io.on("connection", (socket) => {
   });
 });
 
-// 🔹 Lógica principal de examen
+// 🔹 Lógica principal del examen
 function startGroupExam(io, roomId) {
   const roomTimeData = times.get(roomId);
   if (!roomTimeData) return;
@@ -202,12 +200,10 @@ function startGroupExam(io, roomId) {
   let time = roomTimeData.time;
   console.log(`🚀 Iniciando contador en sala ${roomId} con ${formatTimeHMS(time)}`);
 
-  emitStatus(io, roomId, examStatuses.STARTED);
+  emitStatus(io, roomId, examStatuses.IN_PROGRESS);
 
   roomTimeData.interval = setInterval(() => {
     --time;
-
-    console.log(`⏱ Sala ${roomId} - tiempo restante: ${formatTimeHMS(time)}`);
 
     if (time <= 0) {
       clearInterval(roomTimeData.interval);
@@ -215,7 +211,7 @@ function startGroupExam(io, roomId) {
       times.set(roomId, { ...roomTimeData, time: 0 });
 
       io.to(roomId).emit("msg", {
-        isStarted: examStatuses.COMPLETED,
+        examStatus: examStatuses.COMPLETED, // 🔹 nuevo estado
         timeLeft: 0,
         timeFormatted: "00:00:00",
         examCompleted: true,
@@ -230,7 +226,7 @@ function startGroupExam(io, roomId) {
 
     roomTimeData.time = time;
     times.set(roomId, roomTimeData);
-    emitStatus(io, roomId, examStatuses.STARTED);
+    emitStatus(io, roomId, examStatuses.IN_PROGRESS);
   }, 1000);
 }
 
