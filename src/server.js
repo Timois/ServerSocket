@@ -166,17 +166,36 @@ app.post("/emit/continue-evaluation", async (req, res) => {
   }
 });
 
+app.post("/emit/stop-evaluation", (req, res) => {
+  const { roomId, token } = req.body;
+  const key = normalizeRoomId(roomId);
+
+  if (!token) return res.status(401).json({ message: "Token requerido" });
+
+  const roomTimeData = times.get(key);
+  if (!roomTimeData) return res.status(404).json({ message: "Sala no encontrada" });
+
+  stopGroupExam(io, key);
+
+  return res.json({
+    message: "Examen detenido",
+    roomId: key,
+    timeLeft: 0
+  });
+});
+
+
 // 🔹 Socket conexiones
 io.on("connection", (socket) => {
   console.log("✅ Cliente conectado:", socket.id);
 
   socket.on("join", ({ roomId, role }) => {
-  const key = normalizeRoomId(roomId);
-  socket.join(key);
-  const roomSize = io.sockets.adapter.rooms.get(key)?.size || 0;
-  console.log(`📌 Socket ${socket.id} (${role}) se unió a sala ${key}. Total: ${roomSize}`);
-  socket.emit("joined", { roomId: key, clientsInRoom: roomSize });
-});
+    const key = normalizeRoomId(roomId);
+    socket.join(key);
+    const roomSize = io.sockets.adapter.rooms.get(key)?.size || 0;
+    console.log(`📌 Socket ${socket.id} (${role}) se unió a sala ${key}. Total: ${roomSize}`);
+    socket.emit("joined", { roomId: key, clientsInRoom: roomSize });
+  });
 
 
   // Control directo por socket (ej: docente manda evento)
@@ -188,6 +207,10 @@ io.on("connection", (socket) => {
     continueGroupExam(io, roomId);
   });
 
+  socket.on("control:stop", ({ roomId }) => {
+    stopGroupExam(io, roomId);
+  });
+  
   socket.on("disconnect", () => {
     console.log("❌ Cliente desconectado:", socket.id);
   });
@@ -234,9 +257,37 @@ function startGroupExam(io, roomId) {
     emitStatus(io, key, examStatuses.IN_PROGRESS);
   }, 1000);
 
-  // log extra
-  console.log("⏱ Interval creado para sala", key);
-  console.log("⏱ Intervals activos ahora:", [...times.values()].filter(t => t.interval).length);
+  function stopGroupExam(io, roomId) {
+    const key = normalizeRoomId(roomId);
+    const roomTimeData = times.get(key);
+
+    if (!roomTimeData) {
+      console.log(`stopGroupExam -> No roomTimeData para sala ${key}`);
+      return;
+    }
+
+    // Limpiar intervalos si existe
+    if (roomTimeData.interval) {
+      clearInterval(roomTimeData.interval);
+      roomTimeData.interval = null;
+    }
+
+    // Marcar tiempo como 0
+    roomTimeData.time = 0;
+    times.set(key, roomTimeData);
+
+    // Emitir evento a todos los estudiantes de la sala
+    io.to(key).emit("msg", {
+      examStatus: examStatuses.COMPLETED,
+      timeLeft: 0,
+      timeFormatted: "00:00:00",
+      examCompleted: true,
+      serverTime: new Date().toLocaleTimeString("es-ES", { timeZone: "America/La_Paz" })
+    });
+
+    console.log(`⏹ Examen detenido - sala ${key}`);
+  }
+
 }
 
 
