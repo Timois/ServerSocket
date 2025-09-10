@@ -14,7 +14,6 @@ app.use(cors({
 }));
 app.use(express.json());
 
-// 🔹 Socket.IO con CORS
 const io = new Server(server, {
   cors: {
     origin: ["http://localhost:5173", "http://127.0.0.1:5173"],
@@ -22,9 +21,6 @@ const io = new Server(server, {
     credentials: true
   }
 });
-
-// Cache de tokens
-const tokenCache = new Map();
 
 // Estado de salas
 let times = new Map();
@@ -35,23 +31,24 @@ const examStatuses = {
   COMPLETED: "completado"
 };
 
-// Función de formato HH:MM:SS
+// 🔹 Helper para formato HH:MM:SS
 function formatTimeHMS(seconds) {
   const h = Math.floor(seconds / 3600).toString().padStart(2, "0");
   const m = Math.floor((seconds % 3600) / 60).toString().padStart(2, "0");
   const s = (seconds % 60).toString().padStart(2, "0");
   return `${h}:${m}:${s}`;
 }
+
 function normalizeRoomId(roomId) {
   return roomId === undefined || roomId === null ? roomId : String(roomId);
 }
 
-// ✅ Helper para emitir estado
+// 🔹 Emitir estado
 function emitStatus(io, roomId, status) {
   const key = normalizeRoomId(roomId);
   const roomTimeData = times.get(key);
   if (!roomTimeData) return;
-  //console.log(`🔔 emitStatus -> sala ${key} estado=${status} timeLeft=${roomTimeData.time}`);
+
   io.to(key).emit("msg", {
     examStatus: status,
     timeLeft: roomTimeData.time,
@@ -60,163 +57,62 @@ function emitStatus(io, roomId, status) {
   });
 }
 
-
-// ✅ Función de pausar
+// 🔹 Pausar examen
 function pauseGroupExam(io, roomId) {
   const key = normalizeRoomId(roomId);
-  console.log("pauseGroupExam called for room:", key);
-
   const roomTimeData = times.get(key);
-  if (!roomTimeData) {
-    console.log(`pauseGroupExam -> No roomTimeData para sala ${key}`);
-    return;
-  }
-
-  console.log("pauseGroupExam -> roomTimeData before:", { time: roomTimeData.time, interval: roomTimeData.interval });
+  if (!roomTimeData) return;
 
   if (roomTimeData.interval) {
     clearInterval(roomTimeData.interval);
-    // log de debugging: cuántos intervalos activos quedan
-    console.log("⏱ Intervals activos antes de modificar:", [...times.values()].filter(t => t.interval).length);
     roomTimeData.interval = null;
     times.set(key, roomTimeData);
     emitStatus(io, key, examStatuses.PAUSED);
     console.log(`⏸ Examen pausado - sala ${key}`);
-    console.log("pauseGroupExam -> roomTimeData after:", { time: roomTimeData.time, interval: roomTimeData.interval });
-  } else {
-    console.log(`pauseGroupExam -> No había intervalo activo en sala ${key}`);
   }
 }
 
-
-// ✅ Función de continuar
+// 🔹 Continuar examen
 function continueGroupExam(io, roomId) {
   const roomTimeData = times.get(roomId);
   if (!roomTimeData) return;
   if (roomTimeData.interval || roomTimeData.time <= 0) return;
 
   console.log(`▶️ Examen reanudado - sala ${roomId}`);
-  startGroupExam(io, roomId); // al iniciar otra vez, ya emite IN_PROGRESS
+  startGroupExam(io, roomId);
 }
 
-// 🔹 Endpoint: iniciar evaluación
-app.post("/emit/start-evaluation", async (req, res) => {
-  const { roomId, duration, token } = req.body;
+// 🔹 Detener examen
+function stopGroupExam(io, roomId) {
   const key = normalizeRoomId(roomId);
-  console.log("➡️ /emit/start-evaluation -> roomId:", roomId, "normalized:", key, "duration:", duration);
-
-  // ... validaciones de token ...
-  times.set(key, { time: duration, interval: null });
-
-  io.to(key).emit("start", { roomId: key, duration });
-  startGroupExam(io, key);
-
-  return res.json({
-    message: "Evento emitido correctamente",
-    roomId: key,
-    duration,
-    clients: io.sockets.adapter.rooms.get(key)?.size || 0
-  });
-});
-
-
-// 🔹 Endpoint: pausar evaluación
-app.post("/emit/pause-evaluation", async (req, res) => {
-  const { roomId, token } = req.body;
-  const key = normalizeRoomId(roomId);
-  console.log("➡️ /emit/pause-evaluation -> roomId:", roomId, "normalized:", key);
-
-  if (!token) return res.status(401).json({ message: "Token requerido" });
-
-  try {
-    const roomTimeData = times.get(key);
-    if (!roomTimeData) {
-      console.log("➡️ /emit/pause-evaluation -> sala no encontrada en times:", key);
-      return res.status(404).json({ message: "Sala no encontrada" });
-    }
-
-    pauseGroupExam(io, key);
-    return res.json({ message: "Examen pausado", roomId: key, timeLeft: roomTimeData.time });
-  } catch (err) {
-    console.error("❌ Error al pausar:", err.message);
-    return res.status(500).json({ message: "Error interno" });
-  }
-});
-
-// 🔹 Endpoint: continuar evaluación
-app.post("/emit/continue-evaluation", async (req, res) => {
-  const { roomId, token } = req.body;
-  const key = normalizeRoomId(roomId);
-  console.log("➡️ /emit/continue-evaluation -> roomId:", roomId, "normalized:", key);
-
-  if (!token) return res.status(401).json({ message: "Token requerido" });
-
-  try {
-    const roomTimeData = times.get(key);
-    if (!roomTimeData) return res.status(404).json({ message: "Sala no encontrada" });
-
-    if (!roomTimeData.interval && roomTimeData.time > 0) {
-      continueGroupExam(io, key);
-    }
-
-    return res.json({ message: "Examen reanudado", roomId: key, timeLeft: roomTimeData.time });
-  } catch (err) {
-    console.error("❌ Error al continuar:", err.message);
-    return res.status(500).json({ message: "Error interno" });
-  }
-});
-
-app.post("/emit/stop-evaluation", (req, res) => {
-  const { roomId, token } = req.body;
-  const key = normalizeRoomId(roomId);
-
-  if (!token) return res.status(401).json({ message: "Token requerido" });
-
   const roomTimeData = times.get(key);
-  if (!roomTimeData) return res.status(404).json({ message: "Sala no encontrada" });
 
-  stopGroupExam(io, key);
+  if (!roomTimeData) {
+    console.log(`stopGroupExam -> No roomTimeData para sala ${key}`);
+    return;
+  }
 
-  return res.json({
-    message: "Examen detenido",
-    roomId: key,
-    timeLeft: 0
-  });
-});
+  if (roomTimeData.interval) {
+    clearInterval(roomTimeData.interval);
+    roomTimeData.interval = null;
+  }
 
+  roomTimeData.time = 0;
+  times.set(key, roomTimeData);
 
-// 🔹 Socket conexiones
-io.on("connection", (socket) => {
-  console.log("✅ Cliente conectado:", socket.id);
-
-  socket.on("join", ({ roomId, role }) => {
-    const key = normalizeRoomId(roomId);
-    socket.join(key);
-    const roomSize = io.sockets.adapter.rooms.get(key)?.size || 0;
-    console.log(`📌 Socket ${socket.id} (${role}) se unió a sala ${key}. Total: ${roomSize}`);
-    socket.emit("joined", { roomId: key, clientsInRoom: roomSize });
-  });
-
-
-  // Control directo por socket (ej: docente manda evento)
-  socket.on("control:pause", ({ roomId }) => {
-    pauseGroupExam(io, roomId);
+  io.to(key).emit("msg", {
+    examStatus: examStatuses.COMPLETED,
+    reason: "stopped", // 👈 diferencia: detenido por docente
+    timeLeft: 0,
+    timeFormatted: "00:00:00",
+    examCompleted: true,
+    serverTime: new Date().toLocaleTimeString("es-ES", { timeZone: "America/La_Paz" })
   });
 
-  socket.on("control:continue", ({ roomId }) => {
-    continueGroupExam(io, roomId);
-  });
+  console.log(`⏹ Examen detenido - sala ${key}`);
+}
 
-  socket.on("control:stop", ({ roomId }) => {
-    stopGroupExam(io, roomId);
-  });
-  
-  socket.on("disconnect", () => {
-    console.log("❌ Cliente desconectado:", socket.id);
-  });
-});
-
-// 🔹 Lógica principal del examen
+// 🔹 Iniciar examen (con contador)
 function startGroupExam(io, roomId) {
   const key = normalizeRoomId(roomId);
   const roomTimeData = times.get(key);
@@ -232,7 +128,6 @@ function startGroupExam(io, roomId) {
   emitStatus(io, key, examStatuses.IN_PROGRESS);
 
   roomTimeData.interval = setInterval(() => {
-    // decrementa sobre el objeto guardado
     roomTimeData.time--;
 
     if (roomTimeData.time <= 0) {
@@ -243,53 +138,108 @@ function startGroupExam(io, roomId) {
 
       io.to(key).emit("msg", {
         examStatus: examStatuses.COMPLETED,
+        reason: "timeup", // 👈 diferencia: finalizó por tiempo
         timeLeft: 0,
         timeFormatted: "00:00:00",
         examCompleted: true,
         serverTime: new Date().toLocaleTimeString("es-ES", { timeZone: "America/La_Paz" })
       });
 
-      console.log(`✅ Examen completado - sala ${key}`);
+      console.log(`✅ Examen completado por tiempo - sala ${key}`);
       return;
     }
 
     times.set(key, roomTimeData);
     emitStatus(io, key, examStatuses.IN_PROGRESS);
   }, 1000);
-
-  function stopGroupExam(io, roomId) {
-    const key = normalizeRoomId(roomId);
-    const roomTimeData = times.get(key);
-
-    if (!roomTimeData) {
-      console.log(`stopGroupExam -> No roomTimeData para sala ${key}`);
-      return;
-    }
-
-    // Limpiar intervalos si existe
-    if (roomTimeData.interval) {
-      clearInterval(roomTimeData.interval);
-      roomTimeData.interval = null;
-    }
-
-    // Marcar tiempo como 0
-    roomTimeData.time = 0;
-    times.set(key, roomTimeData);
-
-    // Emitir evento a todos los estudiantes de la sala
-    io.to(key).emit("msg", {
-      examStatus: examStatuses.COMPLETED,
-      timeLeft: 0,
-      timeFormatted: "00:00:00",
-      examCompleted: true,
-      serverTime: new Date().toLocaleTimeString("es-ES", { timeZone: "America/La_Paz" })
-    });
-
-    console.log(`⏹ Examen detenido - sala ${key}`);
-  }
-
 }
 
+// ──────────────── ENDPOINTS ────────────────
 
+// Iniciar evaluación
+app.post("/emit/start-evaluation", (req, res) => {
+  const { roomId, duration, token } = req.body;
+  const key = normalizeRoomId(roomId);
+
+  times.set(key, { time: duration, interval: null });
+  io.to(key).emit("start", { roomId: key, duration });
+  startGroupExam(io, key);
+
+  return res.json({ message: "Evento emitido correctamente", roomId: key, duration });
+});
+
+// Pausar evaluación
+app.post("/emit/pause-evaluation", (req, res) => {
+  const { roomId, token } = req.body;
+  const key = normalizeRoomId(roomId);
+
+  const roomTimeData = times.get(key);
+  if (!roomTimeData) return res.status(404).json({ message: "Sala no encontrada" });
+
+  pauseGroupExam(io, key);
+  return res.json({ message: "Examen pausado", roomId: key, timeLeft: roomTimeData.time });
+});
+
+// Continuar evaluación
+app.post("/emit/continue-evaluation", (req, res) => {
+  const { roomId, token } = req.body;
+  const key = normalizeRoomId(roomId);
+
+  const roomTimeData = times.get(key);
+  if (!roomTimeData) return res.status(404).json({ message: "Sala no encontrada" });
+
+  if (!roomTimeData.interval && roomTimeData.time > 0) {
+    continueGroupExam(io, key);
+  }
+
+  return res.json({ message: "Examen reanudado", roomId: key, timeLeft: roomTimeData.time });
+});
+
+// Detener evaluación
+app.post("/emit/stop-evaluation", (req, res) => {
+  const { roomId, token } = req.body;
+
+  if (!roomId) {
+    return res.status(400).json({ message: "roomId requerido" });
+  }
+
+  // Emitir a todos los estudiantes del grupo
+  io.to(roomId).emit("msg", {
+    examStatus: examStatuses.COMPLETED,
+    reason: "stopped",  // 🔹 Para diferenciarlo del timeout
+    timeLeft: 0,
+    timeFormatted: "00:00:00",
+    examCompleted: true,
+    serverTime: new Date().toLocaleTimeString("es-ES", { timeZone: "America/La_Paz" }),
+  });
+
+  console.log(`🛑 Examen detenido por docente en roomId: ${roomId}`);
+
+  res.json({ message: "Evento stop-evaluation emitido correctamente" });
+});
+
+
+// ──────────────── SOCKET.IO ────────────────
+io.on("connection", (socket) => {
+  console.log("✅ Cliente conectado:", socket.id);
+
+  socket.on("join", ({ roomId, role }) => {
+    const key = normalizeRoomId(roomId);
+    socket.join(key);
+    const roomSize = io.sockets.adapter.rooms.get(key)?.size || 0;
+    console.log(`📌 Socket ${socket.id} (${role}) se unió a sala ${key}. Total: ${roomSize}`);
+    socket.emit("joined", { roomId: key, clientsInRoom: roomSize });
+  });
+  
+  socket.on("control:pause", ({ roomId }) => pauseGroupExam(io, roomId));
+  socket.on("control:continue", ({ roomId }) => continueGroupExam(io, roomId));
+  socket.on("control:stop", ({ roomId }) => stopGroupExam(io, roomId));
+
+  socket.on("disconnect", () => {
+    console.log("❌ Cliente desconectado:", socket.id);
+  });
+});
+
+// ──────────────── SERVER ────────────────
 const PORT = process.env.PORT || 3000;
 server.listen(PORT, () => console.log(`🚀 Server listening on port ${PORT}`));
