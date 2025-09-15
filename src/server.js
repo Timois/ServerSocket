@@ -2,7 +2,7 @@ import express from "express";
 import http from "http";
 import { Server } from "socket.io";
 import cors from "cors";
-import { backendService } from "./service/backendService.js";
+import { verifyTokenMiddleware } from "./service/middleware/verifyTokenMiddleware.js";
 
 const app = express();
 const server = http.createServer(app);
@@ -155,10 +155,8 @@ function startGroupExam(io, roomId) {
 }
 
 // ──────────────── ENDPOINTS ────────────────
-
-// Iniciar evaluación
-app.post("/emit/start-evaluation", (req, res) => {
-  const { roomId, duration, token } = req.body;
+app.post("/emit/start-evaluation", verifyTokenMiddleware, (req, res) => {
+  const { roomId, duration } = req.body;
   const key = normalizeRoomId(roomId);
 
   times.set(key, { time: duration, interval: null });
@@ -168,9 +166,8 @@ app.post("/emit/start-evaluation", (req, res) => {
   return res.json({ message: "Evento emitido correctamente", roomId: key, duration });
 });
 
-// Pausar evaluación
-app.post("/emit/pause-evaluation", (req, res) => {
-  const { roomId, token } = req.body;
+app.post("/emit/pause-evaluation", verifyTokenMiddleware, (req, res) => {
+  const { roomId } = req.body;
   const key = normalizeRoomId(roomId);
 
   const roomTimeData = times.get(key);
@@ -181,8 +178,8 @@ app.post("/emit/pause-evaluation", (req, res) => {
 });
 
 // Continuar evaluación
-app.post("/emit/continue-evaluation", (req, res) => {
-  const { roomId, token } = req.body;
+app.post("/emit/continue-evaluation", verifyTokenMiddleware, (req, res) => {
+  const { roomId } = req.body;
   const key = normalizeRoomId(roomId);
 
   const roomTimeData = times.get(key);
@@ -196,17 +193,15 @@ app.post("/emit/continue-evaluation", (req, res) => {
 });
 
 // Detener evaluación
-app.post("/emit/stop-evaluation", (req, res) => {
-  const { roomId, token } = req.body;
+app.post("/emit/stop-evaluation", verifyTokenMiddleware, (req, res) => {
+  const { roomId } = req.body;
+  if (!roomId) return res.status(400).json({ message: "roomId requerido" });
 
-  if (!roomId) {
-    return res.status(400).json({ message: "roomId requerido" });
-  }
+  stopGroupExam(io, roomId);
 
-  // Emitir a todos los estudiantes del grupo
   io.to(roomId).emit("msg", {
     examStatus: examStatuses.COMPLETED,
-    reason: "stopped",  // 🔹 Para diferenciarlo del timeout
+    reason: "stopped", // detenido por docente
     timeLeft: 0,
     timeFormatted: "00:00:00",
     examCompleted: true,
@@ -214,8 +209,7 @@ app.post("/emit/stop-evaluation", (req, res) => {
   });
 
   console.log(`🛑 Examen detenido por docente en roomId: ${roomId}`);
-
-  res.json({ message: "Evento stop-evaluation emitido correctamente" });
+  return res.json({ message: "Evento stop-evaluation emitido correctamente" });
 });
 
 
@@ -230,7 +224,7 @@ io.on("connection", (socket) => {
     console.log(`📌 Socket ${socket.id} (${role}) se unió a sala ${key}. Total: ${roomSize}`);
     socket.emit("joined", { roomId: key, clientsInRoom: roomSize });
   });
-  
+
   socket.on("control:pause", ({ roomId }) => pauseGroupExam(io, roomId));
   socket.on("control:continue", ({ roomId }) => continueGroupExam(io, roomId));
   socket.on("control:stop", ({ roomId }) => stopGroupExam(io, roomId));

@@ -51,4 +51,16 @@ export const backendService = {
       throw err;
     }
   },
+
+  async saveResults(roomId, token) {
+    try {
+      const res = await api.post(`/groups/saveResults/${roomId}`, {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      return res.data;
+    } catch (err) {
+      console.error("❌ Error guardando resultados:", err.message);
+      throw err;
+    }
+  },
 };
