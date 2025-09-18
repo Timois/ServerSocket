@@ -1,18 +1,23 @@
 {
   "name": "socketioserver",
   "version": "1.0.0",
-  "main": "index.js",
+  "description": "Servidor Socket.IO para manejo de evaluaciones",
+  "author": "Tu Nombre",
+  "license": "ISC",
+  "type": "module",
+  "main": "src/server.js",
   "scripts": {
     "dev": "nodemon src/server.js",
+    "start": "node src/server.js",
     "test": "echo \"Error: no test specified\" && exit 1"
   },
-  "author": "",
-  "license": "ISC",
-  "description": "",
   "dependencies": {
     "axios": "^1.11.0",
+    "cors": "^2.8.5",
     "express": "^5.1.0",
-    "nodemon": "^3.1.10",
     "socket.io": "^4.8.1"
+  },
+  "devDependencies": {
+    "nodemon": "^3.1.10"
   }
 }
