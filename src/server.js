@@ -129,7 +129,7 @@ function startGroupExam(io, roomId) {
 
   roomTimeData.interval = setInterval(() => {
     roomTimeData.time--;
-
+    
     if (roomTimeData.time <= 0) {
       clearInterval(roomTimeData.interval);
       roomTimeData.interval = null;
@@ -160,11 +160,21 @@ app.post("/emit/start-evaluation", verifyTokenMiddleware, (req, res) => {
   const key = normalizeRoomId(roomId);
 
   times.set(key, { time: duration, interval: null });
-  io.to(key).emit("start", { roomId: key, duration });
+
+  // 🔹 Emitir start con timeFormatted
+  io.to(key).emit("start", {
+    roomId: key,
+    duration,
+    timeLeft: duration,
+    timeFormatted: formatTimeHMS(duration),
+    serverTime: new Date().toLocaleTimeString("es-ES", { timeZone: "America/La_Paz" })
+  });
+
   startGroupExam(io, key);
 
   return res.json({ message: "Evento emitido correctamente", roomId: key, duration });
 });
+
 
 app.post("/emit/pause-evaluation", verifyTokenMiddleware, (req, res) => {
   const { roomId } = req.body;
