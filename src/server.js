@@ -53,6 +53,7 @@ function emitStatus(io, roomId, status) {
     examStatus: status,
     timeLeft: roomTimeData.time,
     timeFormatted: formatTimeHMS(roomTimeData.time),
+    examCompleted: status === examStatuses.COMPLETED, // ✅ siempre definido
     serverTime: new Date().toLocaleTimeString("es-ES", { timeZone: "America/La_Paz" })
   });
 }
@@ -61,25 +62,24 @@ function emitStatus(io, roomId, status) {
 function pauseGroupExam(io, roomId) {
   const key = normalizeRoomId(roomId);
   const roomTimeData = times.get(key);
-  if (!roomTimeData) return;
+  if (!roomTimeData || !roomTimeData.interval) return;
 
-  if (roomTimeData.interval) {
-    clearInterval(roomTimeData.interval);
-    roomTimeData.interval = null;
-    times.set(key, roomTimeData);
-    emitStatus(io, key, examStatuses.PAUSED);
-    console.log(`⏸ Examen pausado - sala ${key}`);
-  }
+  clearInterval(roomTimeData.interval);
+  roomTimeData.interval = null;
+  times.set(key, roomTimeData);
+
+  emitStatus(io, key, examStatuses.PAUSED);
+  console.log(`⏸ Examen pausado - sala ${key}`);
 }
 
 // 🔹 Continuar examen
 function continueGroupExam(io, roomId) {
-  const roomTimeData = times.get(roomId);
-  if (!roomTimeData) return;
-  if (roomTimeData.interval || roomTimeData.time <= 0) return;
+  const key = normalizeRoomId(roomId);
+  const roomTimeData = times.get(key);
+  if (!roomTimeData || roomTimeData.interval || roomTimeData.time <= 0) return;
 
-  console.log(`▶️ Examen reanudado - sala ${roomId}`);
-  startGroupExam(io, roomId);
+  console.log(`▶️ Examen reanudado - sala ${key}`);
+  startGroupExam(io, key);
 }
 
 // 🔹 Detener examen
@@ -109,27 +109,23 @@ function stopGroupExam(io, roomId) {
     serverTime: new Date().toLocaleTimeString("es-ES", { timeZone: "America/La_Paz" })
   });
 
-  console.log(`⏹ Examen detenido - sala ${key}`);
+  console.log(`⏹ Examen terminado - sala ${key}`);
 }
 
 // 🔹 Iniciar examen (con contador)
 function startGroupExam(io, roomId) {
   const key = normalizeRoomId(roomId);
   const roomTimeData = times.get(key);
-  if (!roomTimeData) return;
-
-  if (roomTimeData.interval) {
-    console.warn(`⚠️ Ya existe un intervalo en sala ${key}`);
-    return;
-  }
+  if (!roomTimeData || roomTimeData.interval) return;
 
   console.log(`🚀 Iniciando contador en sala ${key} con ${formatTimeHMS(roomTimeData.time)}`);
 
+  // Primer envío de estado
   emitStatus(io, key, examStatuses.IN_PROGRESS);
 
   roomTimeData.interval = setInterval(() => {
     roomTimeData.time--;
-    
+
     if (roomTimeData.time <= 0) {
       clearInterval(roomTimeData.interval);
       roomTimeData.interval = null;
@@ -138,10 +134,10 @@ function startGroupExam(io, roomId) {
 
       io.to(key).emit("msg", {
         examStatus: examStatuses.COMPLETED,
-        reason: "timeup", // 👈 diferencia: finalizó por tiempo
+        reason: "timeup",
         timeLeft: 0,
         timeFormatted: "00:00:00",
-        examCompleted: true,
+        examCompleted: true, // ✅ examen terminado
         serverTime: new Date().toLocaleTimeString("es-ES", { timeZone: "America/La_Paz" })
       });
 
