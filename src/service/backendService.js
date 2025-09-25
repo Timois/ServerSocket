@@ -54,7 +54,7 @@ export const backendService = {
 
   async saveResults(roomId, token) {
     try {
-      const res = await api.post(`/groups/saveResults/${roomId}`, {
+      const res = await api.post(`/logs_answers/bulkSave/${roomId}`, {
         headers: { Authorization: `Bearer ${token}` },
       });
       return res.data;
