@@ -3,7 +3,7 @@ import http from "http";
 import { Server } from "socket.io";
 import cors from "cors";
 import { verifyTokenMiddleware } from "./service/middleware/verifyTokenMiddleware.js";
-
+import { backendService } from "./service/backendService.js";
 const app = express();
 const server = http.createServer(app);
 
@@ -123,7 +123,7 @@ function startGroupExam(io, roomId) {
   // Primer envío de estado
   emitStatus(io, key, examStatuses.IN_PROGRESS);
 
-  roomTimeData.interval = setInterval(() => {
+  roomTimeData.interval = setInterval(async () => {
     roomTimeData.time--;
 
     if (roomTimeData.time <= 0) {
@@ -137,11 +137,20 @@ function startGroupExam(io, roomId) {
         reason: "timeup",
         timeLeft: 0,
         timeFormatted: "00:00:00",
-        examCompleted: true, // ✅ examen terminado
+        examCompleted: true,
         serverTime: new Date().toLocaleTimeString("es-ES", { timeZone: "America/La_Paz" })
       });
 
       console.log(`✅ Examen completado por tiempo - sala ${key}`);
+
+      // 🔹 Llamar al backend para finalizar grupo
+      try {
+        const res = await backendService.updateStatus(key);
+        console.log("📡 Backend respondió:", res);
+      } catch (err) {
+        console.error("❌ Error llamando al backend:", err.message);
+      }
+
       return;
     }
 
