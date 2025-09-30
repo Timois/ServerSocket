@@ -66,7 +66,7 @@ export const backendService = {
 
   async updateStatus(roomId) {
     try {
-      const res = await api.put(`/groups/endGroup/{id}/${roomId}`);
+      const res = await api.put(`/groups/endGroup/${roomId}`);
       return res.data;
     } catch (err) {
       console.error("❌ Error actualizando estado:", err.message);

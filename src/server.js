@@ -148,7 +148,7 @@ function startGroupExam(io, roomId) {
         const res = await backendService.updateStatus(key);
         console.log("📡 Backend respondió:", res);
       } catch (err) {
-        console.error("❌ Error llamando al backend:", err.message);
+        console.error("❌ Error llamando al backend:", err.response?.data?.message);
       }
 
       return;
